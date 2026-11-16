@@ -12,12 +12,18 @@ export default function TeamPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentUserRole, setCurrentUserRole] = useState<string>('MEMBER');
+  const [orgId, setOrgId] = useState<string | null>(null); // Added to store org ID
   const [loading, setLoading] = useState(true);
 
   // Edit States
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState({ first_name: '', last_name: '', role: '', email: '' });
   const [saving, setSaving] = useState(false);
+
+  // Add User States
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [addForm, setAddForm] = useState({ first_name: '', last_name: '', role: 'MEMBER', email: '' });
+  const [adding, setAdding] = useState(false);
 
   const fetchTeam = async () => {
     setLoading(true);
@@ -35,7 +41,8 @@ export default function TeamPage() {
       .single();
 
     if (currentUserData?.organization_id) {
-      setCurrentUserRole(currentUserData.role); 
+      setCurrentUserRole(currentUserData.role);
+      setOrgId(currentUserData.organization_id); // Save org ID for adding users
       
       const { data: teamMembers } = await supabase
         .from('users')
@@ -90,6 +97,29 @@ export default function TeamPage() {
     setSaving(false);
   };
 
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgId) return;
+    setAdding(true);
+
+    const { error } = await supabase.from('users').insert([{
+      email: addForm.email,
+      first_name: addForm.first_name,
+      last_name: addForm.last_name,
+      role: addForm.role,
+      organization_id: orgId
+    }]);
+
+    if (error) {
+      alert(`Failed to add user: ${error.message}`);
+    } else {
+      setIsAddingUser(false);
+      setAddForm({ first_name: '', last_name: '', role: 'MEMBER', email: '' }); // Reset form
+      await fetchTeam();
+    }
+    setAdding(false);
+  };
+
   if (loading) return <div className="flex h-screen items-center justify-center bg-[#FAFAFA]"><div className="h-6 w-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>;
 
   const isManager = currentUserRole === 'ORGANIZER' || currentUserRole === 'CO_ORGANIZER';
@@ -105,13 +135,12 @@ export default function TeamPage() {
         <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm space-y-6">
           <div className="pt-2">
             
-            {/* Added Flex container and Add User Button for Managers */}
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Active Team Members ({users.length})</h4>
               
               {isManager && (
                 <button 
-                  onClick={() => alert("Add User modal functionality goes here")}
+                  onClick={() => setIsAddingUser(true)}
                   className="bg-slate-900 text-white text-[10px] font-bold px-4 py-2 rounded-xl uppercase transition hover:bg-slate-800"
                 >
                   + Add User
@@ -185,6 +214,39 @@ export default function TeamPage() {
           </div>
         </div>
       </div>
+
+      {/* ADD USER MODAL */}
+      {isAddingUser && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full space-y-6 shadow-2xl">
+            <div>
+              <h3 className="text-base font-bold text-slate-950">Add Team Member</h3>
+              <p className="text-xs text-slate-500 mt-1">Invite a new collaborator to this workspace.</p>
+            </div>
+            
+            <form onSubmit={handleAddUser} className="space-y-4">
+              <input type="email" placeholder="Email Address" value={addForm.email} onChange={(e) => setAddForm({...addForm, email: e.target.value})} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs outline-none focus:border-indigo-500" required />
+              
+              <div className="flex gap-2">
+                <input type="text" placeholder="First Name" value={addForm.first_name} onChange={(e) => setAddForm({...addForm, first_name: e.target.value})} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs outline-none focus:border-indigo-500" required />
+                <input type="text" placeholder="Last Name" value={addForm.last_name} onChange={(e) => setAddForm({...addForm, last_name: e.target.value})} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs outline-none focus:border-indigo-500" required />
+              </div>
+              
+              <select value={addForm.role} onChange={(e) => setAddForm({...addForm, role: e.target.value})} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs font-bold outline-none focus:border-indigo-500" required>
+                <option value="CO_ORGANIZER">Co-Organizer</option>
+                <option value="MEMBER">Member</option>
+              </select>
+              
+              <div className="flex gap-3 mt-2">
+                <button type="button" onClick={() => setIsAddingUser(false)} className="flex-1 bg-slate-100 font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-200 transition">Cancel</button>
+                <button type="submit" disabled={adding} className="flex-1 bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition">
+                  {adding ? 'Saving...' : 'Add User'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
