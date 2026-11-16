@@ -102,22 +102,37 @@ export default function TeamPage() {
     if (!orgId) return;
     setAdding(true);
 
-    const { error } = await supabase.from('users').insert([{
-      email: addForm.email,
-      first_name: addForm.first_name,
-      last_name: addForm.last_name,
-      role: addForm.role,
-      organization_id: orgId
-    }]);
+    try {
+      // Sending the single new user to your existing backend API, 
+      // exactly the same way setup-family does it.
+      const response = await fetch('/api/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          users: [{
+            first_name: addForm.first_name,
+            last_name: addForm.last_name,
+            email: addForm.email,
+            role: addForm.role,
+            phone_number: '' // Passing empty string if you don't collect it on this form
+          }], 
+          organizationId: orgId 
+        })
+      });
 
-    if (error) {
-      alert(`Failed to add user: ${error.message}`);
-    } else {
+      if (!response.ok) {
+        throw new Error("API failed to process the invite.");
+      }
+
       setIsAddingUser(false);
       setAddForm({ first_name: '', last_name: '', role: 'MEMBER', email: '' }); // Reset form
-      await fetchTeam();
+      await fetchTeam(); // Refresh the list
+      
+    } catch (error: any) {
+      alert(`Failed to add user: ${error.message}`);
+    } finally {
+      setAdding(false);
     }
-    setAdding(false);
   };
 
   if (loading) return <div className="flex h-screen items-center justify-center bg-[#FAFAFA]"><div className="h-6 w-6 border-2 border-slate-900 border-t-transparent rounded-full animate-spin"></div></div>;
