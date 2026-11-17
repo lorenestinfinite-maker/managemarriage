@@ -3,6 +3,8 @@ import { useState, useEffect } from 'react';
 import { createBrowserClient } from '@supabase/ssr';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const supabase = createBrowserClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,11 +21,9 @@ export default function ExpensesPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [activeWeddingId, setActiveWeddingId] = useState<string | null>(null);
 
-  // Modals
   const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<any | null>(null);
   
-  // Add Expense States
   const [isAddingExpense, setIsAddingExpense] = useState(false);
   const [addDescription, setAddDescription] = useState('');
   const [addAmount, setAddAmount] = useState('');
@@ -31,21 +31,22 @@ export default function ExpensesPage() {
   const [addDate, setAddDate] = useState('');
   const [isAdding, setIsAdding] = useState(false);
   
-  // Ping State
   const [pingTransaction, setPingTransaction] = useState<any | null>(null);
   const [pingMessage, setPingMessage] = useState('These details might be incorrect. Please review and update.');
   const [isSendingPing, setIsSendingPing] = useState(false);
 
-  // Edit States
   const [editDescription, setEditDescription] = useState('');
   const [editAmount, setEditAmount] = useState('');
   const [editCategory, setEditCategory] = useState('');
   const [editDate, setEditDate] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
 
+  // File Upload States
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [receiptImagePath, setReceiptImagePath] = useState<string | null>(null);
+
   useEffect(() => {
     async function fetchData() {
-      // 1. Grab the active wedding ID from the browser
       const weddingId = localStorage.getItem('active_wedding_id');
       if (!weddingId) {
         setLoading(false);
@@ -54,13 +55,10 @@ export default function ExpensesPage() {
       setActiveWeddingId(weddingId);
 
       const { data: { session } } = await supabase.auth.getSession();
-      if (session) {
-        setCurrentUser(session.user);
-      }
+      if (session) setCurrentUser(session.user);
 
       try {
         const [txRes, usersRes, catRes] = await Promise.all([
-          // Only fetch transactions for this specific wedding
           supabase.from('transactions').select('*').eq('wedding_id', weddingId).order('transaction_date', { ascending: false }),
           supabase.from('users').select('id, first_name, last_name, email, role'),
           supabase.from('categories').select('*')
@@ -68,8 +66,6 @@ export default function ExpensesPage() {
 
         const rawTransactions = txRes.data || [];
         const usersData = usersRes.data || [];
-        
-        // Filter out the "Total Budget" category for the expense dropdowns
         const validExpenseCategories = (catRes.data || []).filter(cat => cat.name !== 'Total Budget');
 
         const role = usersData.find(u => String(u.id) === String(session?.user.id))?.role || '';
@@ -77,7 +73,6 @@ export default function ExpensesPage() {
 
         const enrichedTransactions = rawTransactions.map(tx => {
           const matchedUser = usersData.find(u => String(u.id) === String(tx.user_id));
-          
           let formattedName = 'Unknown User';
           if (matchedUser) {
             if (matchedUser.first_name || matchedUser.last_name) {
@@ -86,11 +81,7 @@ export default function ExpensesPage() {
               formattedName = matchedUser.email.split('@')[0];
             }
           }
-
-          return {
-            ...tx,
-            creator_name: formattedName
-          };
+          return { ...tx, creator_name: formattedName };
         });
 
         setTransactions(enrichedTransactions);
@@ -104,9 +95,26 @@ export default function ExpensesPage() {
     fetchData();
   }, []);
 
-  const openReceiptModal = (imagePath: string) => {
+  const openReceiptModal = async (imagePath: string) => {
     const { data } = supabase.storage.from('receipts').getPublicUrl(imagePath);
     if (data?.publicUrl) setSelectedReceiptUrl(data.publicUrl);
+  };
+
+  const handleFileUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploadingFile(true);
+    
+    const fileExt = file.name.split('.').pop();
+    const fileName = `${Math.random()}.${fileExt}`;
+    
+    const { error } = await supabase.storage.from('receipts').upload(fileName, file);
+
+    if (error) {
+      alert('Upload failed: ' + error.message);
+    } else {
+      setReceiptImagePath(fileName);
+    }
+    setUploadingFile(false);
   };
 
   const handleOpenEdit = (tx: any) => {
@@ -115,6 +123,7 @@ export default function ExpensesPage() {
     setEditAmount(tx.amount);
     setEditCategory(tx.category);
     setEditDate(tx.transaction_date);
+    setReceiptImagePath(tx.receipt_image_path || null);
   };
 
   const handleUpdateTransaction = async (e: React.FormEvent) => {
@@ -124,12 +133,16 @@ export default function ExpensesPage() {
       description: editDescription,
       amount: Number(editAmount),
       category: editCategory,
-      transaction_date: editDate
+      transaction_date: editDate,
+      receipt_image_path: receiptImagePath
     }).eq('id', editingTransaction.id);
 
     if (!error) {
-      setTransactions(transactions.map(t => t.id === editingTransaction.id ? { ...t, description: editDescription, amount: Number(editAmount), category: editCategory, transaction_date: editDate } : t));
+      setTransactions(transactions.map(t => t.id === editingTransaction.id ? { 
+        ...t, description: editDescription, amount: Number(editAmount), category: editCategory, transaction_date: editDate, receipt_image_path: receiptImagePath 
+      } : t));
       setEditingTransaction(null);
+      setReceiptImagePath(null);
     } else {
       alert(`Failed to update: ${error.message}`);
     }
@@ -147,7 +160,8 @@ export default function ExpensesPage() {
       category: addCategory || (categories.length > 0 ? categories[0].name : ''),
       transaction_date: addDate,
       user_id: currentUser.id,
-      wedding_id: activeWeddingId // Include the wedding_id on insert
+      wedding_id: activeWeddingId,
+      receipt_image_path: receiptImagePath
     };
 
     const { data, error } = await supabase.from('transactions').insert([newExpense]).select();
@@ -157,17 +171,15 @@ export default function ExpensesPage() {
         ? `${currentUser.user_metadata.first_name} ${currentUser.user_metadata.last_name || ''}`.trim() 
         : (currentUser.email?.split('@')[0] || 'Unknown User');
 
-      const enrichedNewExpense = {
-        ...data[0],
-        creator_name: fallbackName
-      };
+      const enrichedNewExpense = { ...data[0], creator_name: fallbackName };
       setTransactions([enrichedNewExpense, ...transactions]);
-      setIsAddingExpense(false);
       
+      setIsAddingExpense(false);
       setAddDescription('');
       setAddAmount('');
       setAddCategory('');
       setAddDate('');
+      setReceiptImagePath(null);
     } else {
       alert(`Failed to add expense: ${error?.message}`);
     }
@@ -183,7 +195,7 @@ export default function ExpensesPage() {
       message: pingMessage,
       transaction_id: pingTransaction.id,
       user_id: currentUser.id,
-      wedding_id: activeWeddingId // Include the wedding_id on ping inserts
+      wedding_id: activeWeddingId
     }]);
 
     if (error) {
@@ -193,6 +205,34 @@ export default function ExpensesPage() {
       setPingMessage('These details might be incorrect. Please review and update.');
     }
     setIsSendingPing(false);
+  };
+
+  const downloadStatement = () => {
+    const doc = new jsPDF();
+    doc.setFontSize(20);
+    doc.text("Wedding Expense Statement", 14, 22);
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Generated on: ${new Date().toLocaleDateString()}`, 14, 30);
+
+    const tableData = filteredTransactions.map(exp => [
+      new Date(exp.transaction_date).toLocaleDateString(),
+      exp.description,
+      exp.category,
+      exp.creator_name,
+      `Rs. ${exp.amount}`
+    ]);
+
+    autoTable(doc, {
+      startY: 40,
+      head: [['Date', 'Description', 'Category', 'Paid By', 'Amount']],
+      body: tableData,
+      theme: 'grid',
+      headStyles: { fillColor: [15, 23, 42] },
+      styles: { fontSize: 9 },
+    });
+
+    doc.save('expense-statement.pdf');
   };
 
   const filteredTransactions = transactions.filter(t => 
@@ -214,9 +254,17 @@ export default function ExpensesPage() {
             <Link href="/" className="text-xs font-bold uppercase tracking-wider text-slate-400 hover:text-slate-900 transition">← Dashboard</Link>
             <h1 className="text-3xl font-extrabold tracking-tight text-slate-950 mt-2">Expense Ledger Menu</h1>
           </div>
-          <button onClick={() => setIsAddingExpense(true)} className="bg-slate-950 px-6 py-3 text-sm font-semibold text-white rounded-full hover:shadow-lg transition border-none cursor-pointer">
-            + Log New Expense
-          </button>
+          <div className="flex gap-3 w-full md:w-auto">
+            {isAdmin && (
+              <button onClick={downloadStatement} className="flex-1 md:flex-none bg-white border border-slate-200 px-4 py-3 text-xs font-bold uppercase tracking-wide text-slate-700 rounded-2xl hover:bg-slate-50 transition flex items-center justify-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                PDF Statement
+              </button>
+            )}
+            <button onClick={() => { setReceiptImagePath(null); setIsAddingExpense(true); }} className="flex-1 md:flex-none bg-slate-950 px-6 py-3 text-sm font-semibold text-white rounded-2xl hover:shadow-lg transition border-none cursor-pointer">
+              + Log New Expense
+            </button>
+          </div>
         </header>
 
         <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center">
@@ -229,60 +277,60 @@ export default function ExpensesPage() {
           />
         </div>
 
-        <div className="bg-white rounded-[2.5rem] p-8 shadow-sm border border-slate-100">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 text-[10px] font-bold uppercase tracking-widest text-slate-400">
-                  <th className="pb-4 pl-2">Date</th>
-                  <th className="pb-4">Description</th>
-                  <th className="pb-4">Category</th>
-                  <th className="pb-4">Created By</th>
-                  <th className="pb-4 text-center">Receipt</th>
-                  <th className="pb-4 text-center">Actions</th>
-                  <th className="pb-4 text-right pr-2">Amount</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {filteredTransactions.map((t) => {
-                  const isCreator = t.user_id === currentUser?.id;
-                  const canEdit = isAdmin || isCreator;
-
-                  return (
-                    <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-4 pl-2 text-xs font-bold text-slate-400">{new Date(t.transaction_date).toLocaleDateString()}</td>
-                      <td className="py-4 text-xs font-bold text-slate-900">{t.description}</td>
-                      <td className="py-4"><span className="inline-block bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2.5 py-1 rounded-lg">{t.category}</span></td>
-                      
-                      <td className="py-4 text-xs font-bold text-indigo-900">
-                        {t.creator_name}
-                      </td>
-
-                      <td className="py-4 text-center">
-                        {t.receipt_image_path ? (
-                          <button onClick={() => openReceiptModal(t.receipt_image_path)} className="text-emerald-600 text-[11px] font-bold px-3 py-1.5 rounded-xl bg-emerald-50">View Bill</button>
-                        ) : <span className="text-[11px] text-slate-300 font-medium">No Receipt</span>}
-                      </td>
-                      <td className="py-4 text-center">
-                        {canEdit ? (
-                          <button onClick={() => handleOpenEdit(t)} className="bg-slate-900 text-white text-[11px] font-bold px-4 py-1.5 rounded-xl">✏️ Edit</button>
-                        ) : (
-                          <button onClick={() => setPingTransaction(t)} className="bg-amber-100 text-amber-800 text-[11px] font-bold px-4 py-1.5 rounded-xl flex items-center gap-1.5 mx-auto"><span>🔔</span> Ping</button>
-                        )}
-                      </td>
-                      <td className="py-4 text-xs font-black text-right pr-2">₹{Number(t.amount).toLocaleString('en-IN')}</td>
-                    </tr>
-                  );
-                })}
-                {filteredTransactions.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="py-12 text-center text-xs font-medium text-slate-400">
-                      No matching expenses found.
-                    </td>
+        <div className="bg-white rounded-[2.5rem] p-4 md:p-8 shadow-sm border border-slate-100">
+          <div className="w-full overflow-x-auto pb-4">
+            <div className="min-w-[800px]">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-100 text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                    <th className="pb-4 pl-2">Date</th>
+                    <th className="pb-4">Description</th>
+                    <th className="pb-4">Category</th>
+                    <th className="pb-4">Created By</th>
+                    <th className="pb-4 text-center">Receipt</th>
+                    <th className="pb-4 text-center">Actions</th>
+                    <th className="pb-4 text-right pr-2">Amount</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {filteredTransactions.map((t) => {
+                    const isCreator = t.user_id === currentUser?.id;
+                    const canEdit = isAdmin || isCreator;
+
+                    return (
+                      <tr key={t.id} className="hover:bg-slate-50/80 transition-colors">
+                        <td className="py-4 pl-2 text-xs font-bold text-slate-400">{new Date(t.transaction_date).toLocaleDateString()}</td>
+                        <td className="py-4 text-xs font-bold text-slate-900">{t.description}</td>
+                        <td className="py-4"><span className="inline-block bg-indigo-50 text-indigo-700 text-[10px] font-bold px-2.5 py-1 rounded-lg">{t.category}</span></td>
+                        
+                        <td className="py-4 text-xs font-bold text-indigo-900">{t.creator_name}</td>
+
+                        <td className="py-4 text-center">
+                          {t.receipt_image_path ? (
+                            <button onClick={() => openReceiptModal(t.receipt_image_path)} className="text-emerald-600 text-[11px] font-bold px-3 py-1.5 rounded-xl bg-emerald-50">View Bill</button>
+                          ) : <span className="text-[11px] text-slate-300 font-medium">No Receipt</span>}
+                        </td>
+                        <td className="py-4 text-center">
+                          {canEdit ? (
+                            <button onClick={() => handleOpenEdit(t)} className="bg-slate-900 text-white text-[11px] font-bold px-4 py-1.5 rounded-xl">✏️ Edit</button>
+                          ) : (
+                            <button onClick={() => setPingTransaction(t)} className="bg-amber-100 text-amber-800 text-[11px] font-bold px-4 py-1.5 rounded-xl flex items-center gap-1.5 mx-auto"><span>🔔</span> Ping</button>
+                          )}
+                        </td>
+                        <td className="py-4 text-xs font-black text-right pr-2">₹{Number(t.amount).toLocaleString('en-IN')}</td>
+                      </tr>
+                    );
+                  })}
+                  {filteredTransactions.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-xs font-medium text-slate-400">
+                        No matching expenses found.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -290,7 +338,7 @@ export default function ExpensesPage() {
       {/* ADD EXPENSE MODAL */}
       {isAddingExpense && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full space-y-6 shadow-2xl">
+          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-base font-bold text-slate-950">Log New Expense</h3>
             <form onSubmit={handleAddTransaction} className="space-y-4">
               <input type="text" placeholder="Description" value={addDescription} onChange={(e) => setAddDescription(e.target.value)} className="w-full border border-slate-200 p-3 rounded-2xl text-xs outline-none focus:border-slate-400" required />
@@ -300,9 +348,23 @@ export default function ExpensesPage() {
                 {categories.map((c, i) => <option key={i} value={c.name}>{c.name}</option>)}
               </select>
               <input type="date" value={addDate} onChange={(e) => setAddDate(e.target.value)} className="w-full border border-slate-200 p-3 rounded-2xl text-xs outline-none focus:border-slate-400" required />
+              
+              {/* Receipt Uploader */}
+              <div className="p-3 border border-slate-200 rounded-2xl">
+                <label className="block text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-widest">Receipt (Snap/Upload)</label>
+                <input 
+                  type="file" 
+                  accept="image/*,application/pdf"
+                  onChange={(e) => handleFileUpload(e.target.files?.[0])}
+                  className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 transition"
+                />
+                {uploadingFile && <span className="text-[10px] text-indigo-500 font-bold mt-2 block">Uploading...</span>}
+                {receiptImagePath && <span className="text-[10px] text-emerald-600 font-bold mt-2 block">✓ Attached</span>}
+              </div>
+
               <div className="flex gap-3 mt-2">
                 <button type="button" onClick={() => setIsAddingExpense(false)} className="flex-1 bg-slate-100 font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-200 transition">Cancel</button>
-                <button type="submit" disabled={isAdding} className="flex-1 bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition">
+                <button type="submit" disabled={isAdding || uploadingFile} className="flex-1 bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition disabled:opacity-50">
                   {isAdding ? 'Saving...' : 'Save Expense'}
                 </button>
               </div>
@@ -338,7 +400,7 @@ export default function ExpensesPage() {
       {/* EDIT MODAL */}
       {editingTransaction && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full space-y-6 shadow-2xl">
+          <div className="bg-white rounded-[2.5rem] p-8 max-w-md w-full space-y-6 shadow-2xl max-h-[90vh] overflow-y-auto">
             <h3 className="text-base font-bold text-slate-950">Edit Expense</h3>
             <form onSubmit={handleUpdateTransaction} className="space-y-4">
               <input type="text" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs outline-none focus:border-slate-400" required />
@@ -347,9 +409,23 @@ export default function ExpensesPage() {
                 {categories.map((c, i) => <option key={i} value={c.name}>{c.name}</option>)}
               </select>
               <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)} className="w-full border border-slate-200 p-3.5 rounded-2xl text-xs outline-none focus:border-slate-400" required />
+              
+              {/* Receipt Uploader for Edit Modal */}
+              <div className="p-3 border border-slate-200 rounded-2xl bg-slate-50">
+                <label className="block text-[10px] font-bold text-slate-400 mb-2 uppercase tracking-widest">Update Receipt</label>
+                <input 
+                  type="file" 
+                  accept="image/*,application/pdf"
+                  onChange={(e) => handleFileUpload(e.target.files?.[0])}
+                  className="w-full text-xs text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-[10px] file:font-bold file:bg-white file:border file:border-slate-200 file:text-slate-700 hover:file:bg-slate-100 transition"
+                />
+                {uploadingFile && <span className="text-[10px] text-indigo-500 font-bold mt-2 block">Uploading...</span>}
+                {receiptImagePath && <span className="text-[10px] text-emerald-600 font-bold mt-2 block">✓ Attached: {receiptImagePath}</span>}
+              </div>
+
               <div className="flex gap-3 mt-2">
                 <button type="button" onClick={() => setEditingTransaction(null)} className="flex-1 bg-slate-100 font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-200 transition">Cancel</button>
-                <button type="submit" disabled={isUpdating} className="flex-1 bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition">Save Changes</button>
+                <button type="submit" disabled={isUpdating || uploadingFile} className="flex-1 bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition disabled:opacity-50">Save Changes</button>
               </div>
             </form>
           </div>
@@ -360,10 +436,10 @@ export default function ExpensesPage() {
       {selectedReceiptUrl && (
         <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[2.5rem] p-6 max-w-lg w-full space-y-4 flex flex-col items-center shadow-2xl">
-            <div className="w-full h-96 bg-slate-900 rounded-2xl overflow-hidden flex items-center justify-center">
+            <div className="w-full h-[60vh] bg-slate-100 rounded-2xl overflow-hidden flex items-center justify-center">
               <img src={selectedReceiptUrl} alt="Receipt" className="w-full h-full object-contain" />
             </div>
-            <button onClick={() => setSelectedReceiptUrl(null)} className="w-full bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition">Close</button>
+            <button onClick={() => setSelectedReceiptUrl(null)} className="w-full bg-slate-950 text-white font-bold py-3.5 rounded-2xl text-xs hover:bg-slate-800 transition">Close Document</button>
           </div>
         </div>
       )}
